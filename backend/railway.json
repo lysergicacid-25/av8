@@ -1,0 +1,10 @@
+{
+  "plugins": ["dockerfile"],
+  "build": {
+    "dockerfilePath": "Dockerfile",
+    "context": "."
+  },
+  "deploy": {
+    "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  }
+}

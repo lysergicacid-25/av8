@@ -1,0 +1,12 @@
+{
+  "name": "aviate-gui",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}
