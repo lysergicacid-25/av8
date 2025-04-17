@@ -1,0 +1,30 @@
+{
+  "devices": {
+    "PJ1": "Projector",
+    "SW1": "Switcher",
+    "AMP1": "Audio Amplifier",
+    "DSP1": "Digital Signal Processor",
+    "TX1": "HDMI Transmitter",
+    "RX1": "HDMI Receiver",
+    "CM1": "Control Module",
+    "SC1": "Scaler",
+    "SSP": "Source Select Panel"
+  },
+  "connectors": {
+    "HDMI": "High-Definition Multimedia Interface",
+    "CAT6": "Category 6 Ethernet",
+    "XLR": "Balanced Audio",
+    "RCA": "Unbalanced Audio",
+    "CTRL": "Control Line",
+    "IR": "Infrared Control",
+    "LAN": "Network"
+  },
+  "labels": {
+    "IN1": "Input Channel 1",
+    "OUT1": "Output Channel 1",
+    "VID-IN": "Video Input",
+    "AUD-OUT": "Audio Output",
+    "CTRL-RM1": "Room Control Line",
+    "POE": "Power over Ethernet"
+  }
+}
