@@ -1,5 +1,5 @@
 {
-  "name": "aviate-gui",
+  "name": "av8-gui",
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",
