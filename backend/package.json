@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "railway": "^2.0.17",
+    "update": "^0.7.4"
+  }
+}
