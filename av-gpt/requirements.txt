@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-openai==0.28.1
+openai
 fpdf
 pandas
 PyMuPDF
