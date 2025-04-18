@@ -1,10 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import openai
 import os
 import json
 import threading
+import fitz  # PyMuPDF for text extraction
+import pandas as pd
+from fpdf import FPDF
+import uuid
 
 # Load API key from environment variable or Railway secrets
 oai_key = os.getenv("OPENAI_API_KEY")
@@ -16,7 +20,10 @@ openai.api_key = oai_key
 TAXONOMY_PATH = "taxonomy_db_extended.json"
 taxonomy_lock = threading.Lock()
 
-app = FastAPI(title="GPT AV Interpreter", version="v0.1")
+app = FastAPI(title="GPT AV Interpreter", version="v0.3")
+
+# Status tracking store (in-memory)
+processing_status: Dict[str, str] = {}
 
 # ----------- Request and Response Models -----------
 class AVInterpretRequest(BaseModel):
@@ -85,12 +92,12 @@ Use the following references:
 
     if include_extras:
         base_prompt += (
-            "\nAlso, generate a cable pull sheet (basic format) and a reflected Bill of Materials (BOM) based on the device list."
-            "\nInclude these as string fields 'cable_pull_sheet' and 'reflected_bom' in your final JSON output."
+            "\nAlso, generate a cable pull sheet (basic format), a reflected Bill of Materials (BOM), a detailed system summary, and a system verification list."
+            "\nReturn each as separate text strings inside 'cable_pull_sheet', 'reflected_bom', 'detailed_summary', and 'system_verification'."
         )
     return base_prompt
 
-# ----------- Live GPT Call -----------
+# ----------- GPT Call -----------
 def call_openai(prompt: str) -> Dict:
     try:
         response = openai.ChatCompletion.create(
@@ -103,7 +110,29 @@ def call_openai(prompt: str) -> Dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ----------- API Route -----------
+# ----------- OCR Helper -----------
+def extract_text_from_pdf(path: str) -> str:
+    doc = fitz.open(path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return text
+
+# ----------- Export Helpers -----------
+def export_to_pdf(title: str, body: str, filename: str):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 10, f"{title}\n\n{body}")
+    pdf.output(filename)
+
+def export_to_csv(data: str, filename: str):
+    with open(filename, "w") as f:
+        f.write("Section,Line\n")
+        for line in data.split("\n"):
+            f.write(f"Data,{line.strip()}\n")
+
+# ----------- API Endpoints -----------
 @app.post("/interpret", response_model=AVInterpretResponse)
 def interpret_plan(request: AVInterpretRequest):
     base_taxonomy = request.taxonomy if request.taxonomy is not None else load_taxonomy()
@@ -125,4 +154,40 @@ def interpret_plan(request: AVInterpretRequest):
         cable_pull_sheet=result.get("cable_pull_sheet"),
         reflected_bom=result.get("reflected_bom")
     )
+
+@app.post("/upload")
+def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    task_id = str(uuid.uuid4())
+    processing_status[task_id] = "Processing started"
+    filename = file.filename
+    path = f"/tmp/{filename}"
+    with open(path, "wb") as f:
+        f.write(file.file.read())
+
+    def background_task():
+        try:
+            processing_status[task_id] = "Running OCR and analysis"
+            ocr_text = extract_text_from_pdf(path)
+            request = AVInterpretRequest(ocr_text=ocr_text, request_pull_sheet=True, request_bom=True)
+            response = interpret_plan(request)
+
+            # Generate outputs
+            export_to_pdf("Cable Pull Sheet", response.cable_pull_sheet or "None", f"/tmp/{filename}_pullsheet.pdf")
+            export_to_pdf("Reflected BOM", response.reflected_bom or "None", f"/tmp/{filename}_bom.pdf")
+            export_to_pdf("System Summary", response.summary, f"/tmp/{filename}_summary.pdf")
+            export_to_pdf("System Verification", "\n".join(response.notes), f"/tmp/{filename}_verification.pdf")
+            export_to_csv(response.cable_pull_sheet or "", f"/tmp/{filename}_pullsheet.csv")
+            export_to_csv(response.reflected_bom or "", f"/tmp/{filename}_bom.csv")
+
+            processing_status[task_id] = "Complete"
+        except Exception as e:
+            processing_status[task_id] = f"Error: {str(e)}"
+
+    background_tasks.add_task(background_task)
+    return {"task_id": task_id, "status": processing_status[task_id]}
+
+@app.get("/status/{task_id}")
+def get_status(task_id: str):
+    status = processing_status.get(task_id, "Unknown Task ID")
+    return {"task_id": task_id, "status": status}
 
