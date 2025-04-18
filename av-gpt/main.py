@@ -191,3 +191,11 @@ def get_status(task_id: str):
     status = processing_status.get(task_id, "Unknown Task ID")
     return {"task_id": task_id, "status": status}
 
+@app.get("/debug/models")
+def list_available_models():
+    try:
+        models = openai.Model.list()
+        return [m.id for m in models.data]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
+
