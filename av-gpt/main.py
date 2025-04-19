@@ -1,31 +1,26 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Dict, Optional
-import openai
+from openai import OpenAI  # Import the new OpenAI client
 import os
 import json
 import threading
-import fitz  # PyMuPDF for text extraction
+import fitz  # PyMuPDF for PDF text extraction
 import pandas as pd
-from fpdf import FPDF
+from fpdf import FPDF  # For creating PDF exports
 import uuid
+from fastapi.responses import FileResponse
 
-# Load API key from environment variable or Railway secrets
-oai_key = os.getenv("OPENAI_API_KEY")
-if not oai_key:
-    raise EnvironmentError("OPENAI_API_KEY not set")
-
-openai.api_key = oai_key
+# Initialize OpenAI client with API key from environment variable
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 TAXONOMY_PATH = "taxonomy_db_extended.json"
-taxonomy_lock = threading.Lock()
+taxonomy_lock = threading.Lock()  # Prevent race conditions when updating taxonomy
 
+# Initialize FastAPI app
 app = FastAPI(title="GPT AV Interpreter", version="v0.3")
 
-# Status tracking store (in-memory)
-processing_status: Dict[str, str] = {}
-
-# ----------- Request and Response Models -----------
+# Request and response models for the API
 class AVInterpretRequest(BaseModel):
     ocr_text: str
     taxonomy: Optional[Dict[str, Dict[str, str]]] = None
@@ -41,13 +36,14 @@ class AVInterpretResponse(BaseModel):
     cable_pull_sheet: Optional[str] = None
     reflected_bom: Optional[str] = None
 
-# ----------- Taxonomy Management -----------
+# Load taxonomy database from file
 def load_taxonomy() -> Dict:
     if os.path.exists(TAXONOMY_PATH):
         with open(TAXONOMY_PATH, "r") as f:
             return json.load(f)
     return {"devices": {}, "symbols": {}, "abbreviations": {}, "wire_labels": {}}
 
+# Merge new entries into the taxonomy file
 def update_taxonomy(new_entries: Dict[str, Dict[str, str]]):
     with taxonomy_lock:
         taxonomy = load_taxonomy()
@@ -63,7 +59,7 @@ def update_taxonomy(new_entries: Dict[str, Dict[str, str]]):
             with open(TAXONOMY_PATH, "w") as f:
                 json.dump(taxonomy, f, indent=2)
 
-# ----------- Prompt Builder -----------
+# Construct a prompt for the GPT model using OCR and optional taxonomy
 def build_prompt(ocr_text: str, taxonomy: Optional[Dict[str, Dict[str, str]]] = None, include_extras=False) -> str:
     base_prompt = f"""
 You are an AV systems expert. Analyze the following OCR’d plan text and extract structured information.
@@ -97,20 +93,20 @@ Use the following references:
         )
     return base_prompt
 
-# ----------- GPT Call -----------
+# Call the OpenAI API and return parsed JSON
 def call_openai(prompt: str) -> Dict:
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
-        content = response["choices"][0]["message"]["content"]
+        content = response.choices[0].message.content
         return json.loads(content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ----------- OCR Helper -----------
+# Extract all text from a given PDF file
 def extract_text_from_pdf(path: str) -> str:
     doc = fitz.open(path)
     text = ""
@@ -118,7 +114,7 @@ def extract_text_from_pdf(path: str) -> str:
         text += page.get_text()
     return text
 
-# ----------- Export Helpers -----------
+# Save a body of text as a simple PDF
 def export_to_pdf(title: str, body: str, filename: str):
     pdf = FPDF()
     pdf.add_page()
@@ -126,13 +122,54 @@ def export_to_pdf(title: str, body: str, filename: str):
     pdf.multi_cell(0, 10, f"{title}\n\n{body}")
     pdf.output(filename)
 
+# Save text as CSV with a header
 def export_to_csv(data: str, filename: str):
     with open(filename, "w") as f:
         f.write("Section,Line\n")
         for line in data.split("\n"):
             f.write(f"Data,{line.strip()}\n")
 
-# ----------- API Endpoints -----------
+# Upload endpoint: handles PDF upload, OCR, GPT call, and generates reports
+@app.post("/upload", response_model=AVInterpretResponse)
+def upload_pdf(file: UploadFile = File(...)):
+    filename = file.filename
+    path = f"/tmp/{filename}"
+
+    # Save uploaded PDF to disk
+    with open(path, "wb") as f:
+        f.write(file.file.read())
+
+    # OCR processing
+    ocr_text = extract_text_from_pdf(path)
+
+    # Prepare request object for /interpret
+    request = AVInterpretRequest(
+        ocr_text=ocr_text,
+        request_pull_sheet=True,
+        request_bom=True
+    )
+    response = interpret_plan(request)
+
+    # Generate PDF and CSV outputs
+    export_to_pdf("Cable Pull Sheet", response.cable_pull_sheet or "None", f"/tmp/{filename}_pullsheet.pdf")
+    export_to_pdf("Reflected BOM", response.reflected_bom or "None", f"/tmp/{filename}_bom.pdf")
+    export_to_pdf("System Summary", response.summary, f"/tmp/{filename}_summary.pdf")
+    export_to_pdf("System Verification", "\n".join(response.notes), f"/tmp/{filename}_verification.pdf")
+    export_to_csv(response.cable_pull_sheet or "", f"/tmp/{filename}_pullsheet.csv")
+    export_to_csv(response.reflected_bom or "", f"/tmp/{filename}_bom.csv")
+
+    return response
+
+# Allow frontend or Swagger to download generated files
+@app.get("/files/{filename}")
+def get_file(filename: str):
+    file_path = f"/tmp/{filename}"
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    else:
+        raise HTTPException(status_code=404, detail="File not found")
+
+# GPT-powered plan interpretation endpoint
 @app.post("/interpret", response_model=AVInterpretResponse, include_in_schema=False)
 def interpret_plan(request: AVInterpretRequest):
     base_taxonomy = request.taxonomy if request.taxonomy is not None else load_taxonomy()
@@ -154,92 +191,3 @@ def interpret_plan(request: AVInterpretRequest):
         cable_pull_sheet=result.get("cable_pull_sheet"),
         reflected_bom=result.get("reflected_bom")
     )
-
-
-
-@app.post("/upload", response_model=AVInterpretResponse)
-def upload_pdf(file: UploadFile = File(...)):
-    filename = file.filename
-    path = f"/tmp/{filename}"
-    
-    with open(path, "wb") as f:
-        f.write(file.file.read())
-
-    # 1. OCR extract
-    ocr_text = extract_text_from_pdf(path)
-
-    # 2. GPT interpret
-    request = AVInterpretRequest(
-        ocr_text=ocr_text,
-        request_pull_sheet=True,
-        request_bom=True
-    )
-    response = interpret_plan(request)
-
-    # 3. Generate export files (optional)
-    export_to_pdf("Cable Pull Sheet", response.cable_pull_sheet or "None", f"/tmp/{filename}_pullsheet.pdf")
-    export_to_pdf("Reflected BOM", response.reflected_bom or "None", f"/tmp/{filename}_bom.pdf")
-    export_to_pdf("System Summary", response.summary, f"/tmp/{filename}_summary.pdf")
-    export_to_pdf("System Verification", "\n".join(response.notes), f"/tmp/{filename}_verification.pdf")
-    export_to_csv(response.cable_pull_sheet or "", f"/tmp/{filename}_pullsheet.csv")
-    export_to_csv(response.reflected_bom or "", f"/tmp/{filename}_bom.csv")
-
-    return response
-
-from fastapi.responses import FileResponse
-
-@app.get("/files/{filename}")
-def get_file(filename: str):
-    file_path = f"/tmp/{filename}"
-    if os.path.exists(file_path):
-        return FileResponse(file_path)
-    else:
-        raise HTTPException(status_code=404, detail="File not found")
-
-
-
-
-
-# @app.post("/upload")
-# def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
-#     task_id = str(uuid.uuid4())
-#     processing_status[task_id] = "Processing started"
-#     filename = file.filename
-#     path = f"/tmp/{filename}"
-#     with open(path, "wb") as f:
-#         f.write(file.file.read())
-# 
-#     def background_task():
-#         try:
-#             processing_status[task_id] = "Running OCR and analysis"
-#             ocr_text = extract_text_from_pdf(path)
-#             request = AVInterpretRequest(ocr_text=ocr_text, request_pull_sheet=True, request_bom=True)
-#             response = interpret_plan(request)
-# 
-#             # Generate outputs
-#             export_to_pdf("Cable Pull Sheet", response.cable_pull_sheet or "None", f"/tmp/{filename}_pullsheet.pdf")
-#             export_to_pdf("Reflected BOM", response.reflected_bom or "None", f"/tmp/{filename}_bom.pdf")
-#             export_to_pdf("System Summary", response.summary, f"/tmp/{filename}_summary.pdf")
-#             export_to_pdf("System Verification", "\n".join(response.notes), f"/tmp/{filename}_verification.pdf")
-#             export_to_csv(response.cable_pull_sheet or "", f"/tmp/{filename}_pullsheet.csv")
-#             export_to_csv(response.reflected_bom or "", f"/tmp/{filename}_bom.csv")
-# 
-#             processing_status[task_id] = "Complete"
-#         except Exception as e:
-#             processing_status[task_id] = f"Error: {str(e)}"
-# 
-#     background_tasks.add_task(background_task)
-#     return {"task_id": task_id, "status": processing_status[task_id]}
-
-@app.get("/status/{task_id}")
-def get_status(task_id: str):
-    status = processing_status.get(task_id, "Unknown Task ID")
-    return {"task_id": task_id, "status": status}
-
-##@app.get("/debug/models")
-## def list_available_models():
-##    try:
-##        models = openai.Model.list()
-##        return [m.id for m in models.data]
-##    except Exception as e:
-##        raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
