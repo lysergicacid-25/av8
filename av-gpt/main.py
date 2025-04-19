@@ -133,7 +133,7 @@ def export_to_csv(data: str, filename: str):
             f.write(f"Data,{line.strip()}\n")
 
 # ----------- API Endpoints -----------
-@app.post("/interpret", response_model=AVInterpretResponse)
+@app.post("/interpret", response_model=AVInterpretResponse, include_in_schema=False)
 def interpret_plan(request: AVInterpretRequest):
     base_taxonomy = request.taxonomy if request.taxonomy is not None else load_taxonomy()
     prompt = build_prompt(
@@ -198,4 +198,3 @@ def list_available_models():
         return [m.id for m in models.data]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
-
