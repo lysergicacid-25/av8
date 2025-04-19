@@ -155,46 +155,91 @@ def interpret_plan(request: AVInterpretRequest):
         reflected_bom=result.get("reflected_bom")
     )
 
-@app.post("/upload")
-def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
-    task_id = str(uuid.uuid4())
-    processing_status[task_id] = "Processing started"
+
+
+@app.post("/upload", response_model=AVInterpretResponse)
+def upload_pdf(file: UploadFile = File(...)):
     filename = file.filename
     path = f"/tmp/{filename}"
+    
     with open(path, "wb") as f:
         f.write(file.file.read())
 
-    def background_task():
-        try:
-            processing_status[task_id] = "Running OCR and analysis"
-            ocr_text = extract_text_from_pdf(path)
-            request = AVInterpretRequest(ocr_text=ocr_text, request_pull_sheet=True, request_bom=True)
-            response = interpret_plan(request)
+    # 1. OCR extract
+    ocr_text = extract_text_from_pdf(path)
 
-            # Generate outputs
-            export_to_pdf("Cable Pull Sheet", response.cable_pull_sheet or "None", f"/tmp/{filename}_pullsheet.pdf")
-            export_to_pdf("Reflected BOM", response.reflected_bom or "None", f"/tmp/{filename}_bom.pdf")
-            export_to_pdf("System Summary", response.summary, f"/tmp/{filename}_summary.pdf")
-            export_to_pdf("System Verification", "\n".join(response.notes), f"/tmp/{filename}_verification.pdf")
-            export_to_csv(response.cable_pull_sheet or "", f"/tmp/{filename}_pullsheet.csv")
-            export_to_csv(response.reflected_bom or "", f"/tmp/{filename}_bom.csv")
+    # 2. GPT interpret
+    request = AVInterpretRequest(
+        ocr_text=ocr_text,
+        request_pull_sheet=True,
+        request_bom=True
+    )
+    response = interpret_plan(request)
 
-            processing_status[task_id] = "Complete"
-        except Exception as e:
-            processing_status[task_id] = f"Error: {str(e)}"
+    # 3. Generate export files (optional)
+    export_to_pdf("Cable Pull Sheet", response.cable_pull_sheet or "None", f"/tmp/{filename}_pullsheet.pdf")
+    export_to_pdf("Reflected BOM", response.reflected_bom or "None", f"/tmp/{filename}_bom.pdf")
+    export_to_pdf("System Summary", response.summary, f"/tmp/{filename}_summary.pdf")
+    export_to_pdf("System Verification", "\n".join(response.notes), f"/tmp/{filename}_verification.pdf")
+    export_to_csv(response.cable_pull_sheet or "", f"/tmp/{filename}_pullsheet.csv")
+    export_to_csv(response.reflected_bom or "", f"/tmp/{filename}_bom.csv")
 
-    background_tasks.add_task(background_task)
-    return {"task_id": task_id, "status": processing_status[task_id]}
+    return response
+
+from fastapi.responses import FileResponse
+
+@app.get("/files/{filename}")
+def get_file(filename: str):
+    file_path = f"/tmp/{filename}"
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    else:
+        raise HTTPException(status_code=404, detail="File not found")
+
+
+
+
+
+# @app.post("/upload")
+# def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+#     task_id = str(uuid.uuid4())
+#     processing_status[task_id] = "Processing started"
+#     filename = file.filename
+#     path = f"/tmp/{filename}"
+#     with open(path, "wb") as f:
+#         f.write(file.file.read())
+# 
+#     def background_task():
+#         try:
+#             processing_status[task_id] = "Running OCR and analysis"
+#             ocr_text = extract_text_from_pdf(path)
+#             request = AVInterpretRequest(ocr_text=ocr_text, request_pull_sheet=True, request_bom=True)
+#             response = interpret_plan(request)
+# 
+#             # Generate outputs
+#             export_to_pdf("Cable Pull Sheet", response.cable_pull_sheet or "None", f"/tmp/{filename}_pullsheet.pdf")
+#             export_to_pdf("Reflected BOM", response.reflected_bom or "None", f"/tmp/{filename}_bom.pdf")
+#             export_to_pdf("System Summary", response.summary, f"/tmp/{filename}_summary.pdf")
+#             export_to_pdf("System Verification", "\n".join(response.notes), f"/tmp/{filename}_verification.pdf")
+#             export_to_csv(response.cable_pull_sheet or "", f"/tmp/{filename}_pullsheet.csv")
+#             export_to_csv(response.reflected_bom or "", f"/tmp/{filename}_bom.csv")
+# 
+#             processing_status[task_id] = "Complete"
+#         except Exception as e:
+#             processing_status[task_id] = f"Error: {str(e)}"
+# 
+#     background_tasks.add_task(background_task)
+#     return {"task_id": task_id, "status": processing_status[task_id]}
 
 @app.get("/status/{task_id}")
 def get_status(task_id: str):
     status = processing_status.get(task_id, "Unknown Task ID")
     return {"task_id": task_id, "status": status}
 
-@app.get("/debug/models")
-def list_available_models():
-    try:
-        models = openai.Model.list()
-        return [m.id for m in models.data]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
+##@app.get("/debug/models")
+## def list_available_models():
+##    try:
+##        models = openai.Model.list()
+##        return [m.id for m in models.data]
+##    except Exception as e:
+##        raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
