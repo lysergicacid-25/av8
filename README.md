@@ -9,7 +9,7 @@ This is a test environment. Larger plan sets may be slow or hang and fail, so pl
 I apologize for any bugginess or crashing. If this project seems worthwhile continuing more compute will be added in the future. 
 
 - James
-sjainstalls@gmail.com
+
 ---
 
 **DEV**
@@ -19,4 +19,4 @@ sjainstalls@gmail.com
 - **Frontend**: React + Tailwind + ShadCN
 - **Backend**: FastAPI + OCR + GPT Interpreter
 - **Deploy**: Railway (Docker)
-- **Domain**: av-8.io
+- **Test Environment**: av-8.io/docs 
